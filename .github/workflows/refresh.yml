@@ -1,0 +1,51 @@
+# Monthly: fetch the newest WHO life tables (and try the SSA table), validate them, and if they
+# changed, commit and redeploy. The tables change about once a year; checking monthly catches the
+# new SSA table soon after each Trustees Report. Fails safe: invalid or unreachable tables are
+# never written, and the site keeps the last good ones.
+name: Refresh life tables
+
+on:
+  schedule:
+    - cron: "23 6 3 * *"   # the 3rd of every month, 06:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Fetch and validate WHO and SSA life tables
+        run: python3 pipeline/lifetables.py refresh
+      - name: Tests against the new tables
+        run: |
+          python3 -m unittest discover -s tests
+          node --test tests/js/*.test.mjs
+      - name: Commit and redeploy if anything changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add data/who.json data/ssa.json
+          if git diff --cached --quiet; then
+            echo "Life tables unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Life tables refresh $(date -u +%F)"
+          git push
+          gh workflow run pages.yml --ref main

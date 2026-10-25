@@ -1,0 +1,13 @@
+# Decisions
+
+1. **"LifeClock", not "Death Clock".** Settles the open question from the notes. The brief asks for gentle copy, and the name matches the owned domain. "Death clock" stays a search phrase the pages answer, not the brand.
+2. **App first, hardware later.** Settles "hardware or app first?". A web clock with a desk mode tests whether people keep it on a screen before anyone builds a device.
+3. **Gentle by design.** Every number is called an average, the source table is named under the clock, a count-up mode is one tap away, and 988 plus findahelpline.com are on every page and beside the result. No lifestyle adjustments (they'd be medical claims).
+4. **SSA for the US, WHO for everyone else.** The SSA table has single years of age to 119 and is newer (2023 rates, 2026 Trustees Report) than the WHO's US figures. The WHO's 2023 tables cover 185 countries with one method. Past 85 the WHO gives one figure, so the SSA curve's shape extends it.
+5. **The clock's end date is fixed when you press start.** It then counts down one second per second. (Recomputing every second would make it tick slower than real time, because surviving another second raises your expected age at death slightly.)
+6. **Nothing stored.** No localStorage, cookies or analytics by default. Desk mode keeps settings in the URL fragment, which browsers don't send to servers, and warns not to share that link. Share cards carry only the number.
+7. **Static site, Python build, no frameworks.** Same reasoning as the other machine-run sites: no dependencies to rot. The model exists in Python (build-time pages) and JS (the clock); a test requires them to agree to 1e-9 on a grid of ages, countries and sexes.
+8. **Honest handling of blocked sources.** ssa.gov answers scripts with 403 (Akamai). The refresh doesn't disguise itself as a browser; it keeps the committed table, and the yearly update can be done in a browser (OPERATIONS.md).
+9. **Validation tolerant of real data.** WHO's 2023 table for Palestinian men rises slightly between ages 20 and 25 (conflict deaths), and Kiribati's men show 0.94 years left at 85. The validator allows small rises and low old-age values but rejects scrambled tables.
+10. **Country pages are real data pages.** Each has that country's own table by age and sex, its rank and its gap to the world average, plus Dataset structured data. They answer searches like "life expectancy in Japan by age"; no page is a duplicate.
+11. **No Tidbyt app or preorder page in v1.** Tidbyt's future is uncertain after its 2024 acquisition, and a preorder is commercial (not allowed on Pages). Both are keys for later.
