@@ -1,0 +1,4 @@
+{
+ "about": "Written by pipeline/lifetables.py refresh. who_failing_since is the date of the first run in the current streak of runs that couldn't refresh the WHO tables, or null when the last run could. The refresh job fails once that date is 45 days old.",
+ "who_failing_since": null
+}

@@ -11,14 +11,17 @@ Sources:
   committed table stays (it changes once a year with the Trustees Report).
 
 Fails safe: a table that can't be fetched or fails validation is never written. Exit status is 1
-only when WHO data can't be fetched or validated, so a failed run shows up in Actions.
+only when the WHO tables have gone too long without a successful refresh (WHO_STALE_AFTER_DAYS
+below), so a long outage shows up in Actions and a passing one doesn't.
 """
 import datetime as dt
 import html
+import http.client
 import json
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -145,18 +148,100 @@ def write_if_changed(path, data, keys_to_ignore=("retrieved",)):
     return True
 
 
+# WHO retries and a staleness limit (added 2026-11-22). The scheduled run on 2026-11-03 failed on an
+# HTTP 500 from WHO's API that outlasted get()'s three quick tries (15 and 30 seconds apart); a run by
+# hand a week later passed with no change. WHO publishes new life tables every few years, so a missed
+# month costs nothing. refresh() now tries WHO again a few minutes later. If it still can't refresh
+# the tables (an error, or a download that fails validation), it keeps the committed ones, warns, and
+# records the date of the first failed run in data/refresh-state.json. The run fails only once that
+# date is WHO_STALE_AFTER_DAYS old, so a long outage still shows up.
+WHO_PAUSES = (60, 180)  # seconds before the 2nd and 3rd tries; each try is get()'s three quick ones
+WHO_RETRY_UNTIL = 480  # seconds after the first try; no new try starts later (keeps the job inside its timeout)
+# The 2nd failed monthly run comes 28-31 days after the 1st and the 3rd 59-62 days after it, so the
+# third failed monthly run in a row fails: by then the tables have gone about three months unrefreshed.
+WHO_STALE_AFTER_DAYS = 45
+STATE_FILE = "refresh-state.json"
+STATE_ABOUT = ("Written by pipeline/lifetables.py refresh. who_failing_since is the date of the first run in the "
+               "current streak of runs that couldn't refresh the WHO tables, or null when the last run could. "
+               f"The refresh job fails once that date is {WHO_STALE_AFTER_DAYS} days old.")
+# Checked 2026-11-22: ssa.gov answered 403 in every refresh run since 2026-10-25 and to the same request
+# from a home connection, robots.txt included. OPERATIONS.md has the details.
+SSA_REFUSES = ("ssa.gov refuses scripted requests, GitHub's runners included, and has in every refresh run "
+               "since 2026-10-25. The committed table stays; OPERATIONS.md says how it gets updated.")
+
+
+def transient(e):
+    """True for a failure worth trying again: HTTP 408, 429 or 5xx, a timeout, a dropped connection, a cut-off body."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code in (408, 429) or e.code >= 500
+    return isinstance(e, (OSError, http.client.HTTPException, json.JSONDecodeError))
+
+
+def who_with_retries(fetch=fetch_who, pauses=WHO_PAUSES, retry_until=WHO_RETRY_UNTIL, clock=time.monotonic):
+    """fetch(), tried again after each pause while the failure is transient and time allows."""
+    start = clock()
+    for pause in tuple(pauses) + (None,):
+        try:
+            return fetch()
+        except Exception as e:
+            if pause is None or not transient(e) or clock() - start + pause > retry_until:
+                raise
+            print(f"::warning::WHO didn't answer ({e}); trying again in {pause} s", flush=True)
+            time.sleep(pause)
+
+
+def utc_today():
+    return dt.datetime.now(dt.timezone.utc).date()
+
+
+def read_state():
+    path = DATA / STATE_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def write_state(state):
+    state = {"about": STATE_ABOUT, **{k: v for k, v in state.items() if k != "about"}}
+    (DATA / STATE_FILE).write_text(json.dumps(state, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def who_refreshed():
+    """Ends a streak of failed WHO refreshes, if one was running (and recreates a missing state file)."""
+    state = read_state()
+    if state.get("who_failing_since"):
+        print(f"WHO refreshes had failed since {state['who_failing_since']}; this one worked")
+    if state.get("who_failing_since") or not (DATA / STATE_FILE).exists():
+        write_state(dict(state, who_failing_since=None))
+
+
+def who_not_refreshed(error):
+    """Keeps the committed WHO tables after a failed refresh. Returns 1 once refreshes have failed too long."""
+    today, state = utc_today(), read_state()
+    since = state.get("who_failing_since")
+    if not since:
+        since = today.isoformat()
+        write_state(dict(state, who_failing_since=since))
+    fail_from = dt.date.fromisoformat(since) + dt.timedelta(days=WHO_STALE_AFTER_DAYS)
+    if today >= fail_from:
+        print(f"::error::WHO life tables not updated: {error}. Every run since {since} has failed to refresh "
+              f"them, so this one fails. The site keeps the committed tables.")
+        return 1
+    print(f"::warning::WHO life tables not updated, keeping the committed ones: {error}. Runs have failed "
+          f"since {since}; from {fail_from} the run fails if WHO still does.")
+    return 0
+
+
 def refresh(fetch_who_fn=fetch_who, fetch_ssa_page=lambda: get(SSA_URL)):
     status = 0
     try:
-        who = fetch_who_fn()
+        who = who_with_retries(fetch_who_fn)
         problems = validate_who(who)
         if problems:
-            raise ValueError("; ".join(problems[:5]))
+            raise ValueError("the download failed validation: " + "; ".join(problems[:5]))
         write_if_changed(DATA / "who.json", who)
         print(f"WHO {who['year']}: {len(who['countries'])} tables")
+        who_refreshed()
     except Exception as e:
-        print(f"::error::WHO life tables not updated: {e}")
-        status = 1
+        status = who_not_refreshed(e)
     try:
         ssa = parse_ssa(fetch_ssa_page())
         problems = validate_ssa(ssa)
@@ -165,7 +250,10 @@ def refresh(fetch_who_fn=fetch_who, fetch_ssa_page=lambda: get(SSA_URL)):
         write_if_changed(DATA / "ssa.json", ssa)
         print(f"SSA {ssa['table_year']} (Trustees Report {ssa['trustees_report']})")
     except Exception as e:
-        print(f"::warning::SSA table not updated, keeping the committed one: {e}")
+        if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+            print(f"::notice::SSA table not updated: ssa.gov answered 403. {SSA_REFUSES}")
+        else:
+            print(f"::warning::SSA table not updated, keeping the committed one: {e}")
     return status
 
 

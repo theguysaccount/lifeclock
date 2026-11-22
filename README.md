@@ -26,6 +26,7 @@ Failure handling and the keys for the domain, analytics and posters: [OPERATIONS
 
 ```
 data/ssa.json, data/who.json   life tables (refreshed by refresh.yml), data/countries.json names and ISO codes
+data/refresh-state.json        the date WHO refreshes began failing, if they are (written by refresh.yml)
 pipeline/lifetables.py         fetch, parse and validate the WHO and SSA tables
 pipeline/reference.py          the model in Python (independent of the JS; the tests compare them)
 pipeline/build.py              static site generator (standard library only) -> dist/

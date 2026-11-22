@@ -2,6 +2,9 @@
 # changed, commit and redeploy. The tables change about once a year; checking monthly catches the
 # new SSA table soon after each Trustees Report. Fails safe: invalid or unreachable tables are
 # never written, and the site keeps the last good ones.
+# Since 2026-11-22 a WHO failure is a warning until WHO refreshes have failed on every run for 45
+# days (the third monthly run in a row); data/refresh-state.json holds the date that streak began.
+# ssa.gov refuses GitHub's runners, so the SSA attempt ends in a notice (see OPERATIONS.md).
 name: Refresh life tables
 
 on:
@@ -39,13 +42,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git add data/who.json data/ssa.json
+          git add data/who.json data/ssa.json data/refresh-state.json
           if git diff --cached --quiet; then
             echo "Life tables unchanged."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet -- data/who.json data/ssa.json; then
+            # Only data/refresh-state.json changed: a streak of failed WHO refreshes began or ended.
+            # The site doesn't read that file, so there's nothing to redeploy.
+            git commit -m "WHO refresh status $(date -u +%F)"
+            git push
+            exit 0
+          fi
           git commit -m "Life tables refresh $(date -u +%F)"
           git push
           gh workflow run pages.yml --ref main
